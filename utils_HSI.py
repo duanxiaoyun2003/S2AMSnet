@@ -507,9 +507,11 @@ def sample_gt(gt, train_size, mode='random'):
     test_label = []
     if mode == 'random':
         if train_size == 1:
-            random.shuffle(X)
-            train_indices = [list(t) for t in zip(*X)]
-            [train_label.append(i) for i in gt[tuple(train_indices)]]
+            random.shuffle(X)  #对数据集 X 进行随机打乱
+            train_indices = [list(t) for t in zip(*X)] 
+            #将数据 X 的行和列进行解包，并将结果存储到 train_indices 中。zip(*X) 解包的是 X 的不同维度。
+            [train_label.append(i) for i in gt[tuple(train_indices)]] 
+            #通过 gt[tuple(train_indices)] 从标注数据 gt 中获取与训练集索引对应的标签，并将这些标签追加到 train_label 列表中。
             train_set = np.column_stack((train_indices[0],train_indices[1],train_label))
             train_gt[tuple(train_indices)] = gt[tuple(train_indices)]
             test_gt = []

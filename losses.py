@@ -232,13 +232,14 @@ class InstanceLoss(nn.Module):
         self.mask = self.mask_correlated_samples(batch_size)
         self.criterion = nn.CrossEntropyLoss(reduction="sum")
 
-    def mask_correlated_samples(self, batch_size):
-        N = 2 * batch_size
-        mask = torch.ones((N, N))
-        mask = mask.fill_diagonal_(0)
+    def mask_correlated_samples(self, batch_size):  #掩码相关样本 (mask_correlated_samples):
+        N = 2 * batch_size  #结合两个批次后的样本总数。
+        mask = torch.ones((N, N))  #一个 (N, N) 的矩阵，初始化为 1，用于排除特定样本对。
+        mask = mask.fill_diagonal_(0)  #将掩码矩阵的对角线设置为 0，以排除自相似度。
         for i in range(batch_size):
             mask[i, batch_size + i] = 0
             mask[batch_size + i, i] = 0
+            #循环: 设置特定的非对角元素为 0，确保正样本对（来自不同视图的相同样本）不被用作负样本对。
         mask = mask.bool()
         return mask
 
@@ -251,31 +252,37 @@ class InstanceLoss(nn.Module):
         # z_i = F.normalize(z_i, dim=1)
         # z_j = F.normalize(z_j, dim=1)
 
-        z = torch.cat((z_i, z_j), dim=0)
+        z = torch.cat((z_i, z_j), dim=0)  #从源域图像SD和生成域GD中得到的嵌入。它们被重塑并拼接。
 
-        sim = torch.matmul(z, z.T) / self.temperature
-        sim_i_j = torch.diag(sim, self.batch_size)
-        sim_j_i = torch.diag(sim, -self.batch_size)
+        sim = torch.matmul(z, z.T) / self.temperature  #计算嵌入之间的相似度矩阵，并用温度缩放。
+        sim_i_j = torch.diag(sim, self.batch_size)  #z_i 和 z_j 之间的相似度（正样本对）。
+        sim_j_i = torch.diag(sim, -self.batch_size)  #z_j 和 z_i 之间的相似度（从另一角度看的正样本对）。
 
-        positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0).reshape(N, 1)
-        negative_samples = sim[self.mask].reshape(N, -1)
+        positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0).reshape(N, 1)  #组合正样本对的相似度。
+        negative_samples = sim[self.mask].reshape(N, -1)  #使用掩码提取所有负样本对的相似度。
 
-        labels = torch.zeros(N).to(positive_samples.device).long()
-        logits = torch.cat((positive_samples, negative_samples), dim=1)
+        labels = torch.zeros(N).to(positive_samples.device).long()  #交叉熵损失的目标标签，正样本对标记为 0。
+        logits = torch.cat((positive_samples, negative_samples), dim=1) #将正样本和负样本组合成矩阵。
         loss = self.criterion(logits, labels)
-        loss /= N
+        loss /= N #计算损失，取平均。
 
         return loss
+        #InstanceLoss 类定义了一种对比损失函数，旨在使相同实例的不同视图在嵌入空间中接近，
+        #而使不同实例的嵌入距离远离。它使用温度参数来调整相似度分数，并应用交叉熵损失以确保正确的嵌入分离。
     
 
 # def MI_loss(src, tgt, label, nets, args):
 def MI_loss(src, tgt, nets, args):
+    #用于计算对比学习中的 Mutual Information (MI) 互信息损失。
+    #它的主要目的是通过计算不同视图或增强下的特征之间的对比损失来训练模型。
     nce_layers = args.nce_layers
     nce_layers = list(map(int, nce_layers.split(',')))
+    #从 args 中获取 nce_layers 参数，并将其转换为整数列表。
 
-    bs = src.shape[0]
+    bs = src.shape[0] #计算批量大小，即输入数据的第一个维度。
 
     crit  = InstanceLoss(batch_size=bs, temperature=args.temp).cuda()
+    #创建 InstanceLoss 实例损失 实例，设置批量大小和温度，并将其移动到 GPU。
     # crit = SupConLoss(temperature=args.temp).cuda()
     netG = nets
     # netG, netMLP = nets
@@ -284,6 +291,8 @@ def MI_loss(src, tgt, nets, args):
     feat_q = netG(tgt, nce_layers, encode_only=True)
 
     feat_k = netG(src, nce_layers, encode_only=True)
+    #使用网络 netG 计算目标数据 tgt 和原始数据 src 的特征。这些特征是在指定的层中计算的。
+
     # feat_q = netMLP(feat_q)
     # feat_k = netMLP(feat_k)
     # feat_k_pool, sample_ids = netF(feat_k, 256, None)
@@ -301,5 +310,9 @@ def MI_loss(src, tgt, nets, args):
         # loss = crit(z, label) * 1.0
         loss = crit(f_q, f_k) * 1.0
         total_nce_loss += loss.mean()
+        #遍历 feat_q 和 feat_k 中的每一对特征，以及对应的层。
+        #计算每一对特征的损失，并累加到 total_nce_loss 中。
+
 
     return total_nce_loss / n_layers
+    #将总损失除以层数，返回平均损失值。

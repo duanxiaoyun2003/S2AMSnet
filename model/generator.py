@@ -5,7 +5,7 @@ from torch.autograd import Function
 from torch.nn import init
 from .involution import involution
 
-class Spectral_Weight(nn.Module):
+class Spectral_Weight(nn.Module):#光谱特征提取
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=1, dilation=1, groups=1, bias=False):
         super(Spectral_Weight, self).__init__()
         self.f_inv_11 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, dilation, groups, bias)
@@ -14,7 +14,7 @@ class Spectral_Weight(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, X_h):
-        X_h = self.f_inv_11(self.f_inv_12(X_h))
+        X_h = self.f_inv_11(self.f_inv_12(X_h))#经involution和conv2d处理后得到光谱特征
         return X_h
     
 class Spatial_Weight(nn.Module):
@@ -25,7 +25,7 @@ class Spatial_Weight(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, X_h):
-        X_h = self.Conv_weight(X_h)
+        X_h = self.Conv_weight(X_h)  #经conv2d处理后得到空间特征
         return X_h
 
 class AdaIN(nn.Module):
@@ -149,19 +149,22 @@ class ResnetBlock(nn.Module):
 class GNet1(nn.Module):
     def __init__(self, args):
         super(GNet1, self).__init__()
-        ch = args.GIN_ch
+        ch = args.GIN_ch   #ch=24
         self.Spectral_Weight_11 = Spectral_Weight(args.n_bands, ch, kernel_size=3, stride=1, padding=1)
         self.Spatial_Weight_11 = Spatial_Weight(args.n_bands, ch, kernel_size=3, stride=1, padding=1)
-        self.AdaIN1 = AdaIN(2,ch) if args.noise else nn.Identity()
+        self.AdaIN1 = AdaIN(2,ch) if args.noise else nn.Identity()  
+        #如果 args.noise 为 True 则使用 AdaIN，否则是 Identity（即不进行处理）。
         self.Spectral_Weight_12 = Spectral_Weight(ch, ch, kernel_size=3, stride=1, padding=1)
         self.Spatial_Weight_12 = Spatial_Weight(ch, ch, kernel_size=3, stride=1, padding=1)
         self.Spectral_Weight_13 = Spectral_Weight(ch, ch, kernel_size=3, stride=1, padding=1)
         self.Spatial_Weight_13 = Spatial_Weight(ch, ch, kernel_size=3, stride=1, padding=1)
-        self.generate1 = nn.Conv2d(ch, args.n_bands, 3, padding=1)
-        self.activate1 = nn.LeakyReLU()
-        self.bn1 = nn.BatchNorm2d(ch)
+        self.generate1 = nn.Conv2d(ch, args.n_bands, 3, padding=1)  #生成
+        self.activate1 = nn.LeakyReLU()  #激活函数
+        self.bn1 = nn.BatchNorm2d(ch)  #批归一化曾
         self.Weight_Alpha1 = nn.Parameter(torch.ones(2) / 2, requires_grad=True)
-        self.__initialize_weights()
+        #Weight_Alpha1 控制了原始输入与卷积处理后输出的融合比例。初始值为 [0.5, 0.5]，在训练过程中会动态调整，以达到最优的融合效果。
+        self.__initialize_weights()     
+        #gnet1 与 gnet2结构完全一致
 
     def __initialize_weights(self):
         for m in self.modules():
@@ -217,15 +220,21 @@ class GNet2(nn.Module):
                 m.weight.data = (m.weight.data - weight.mean())/weight.std()
 
     def forward(self, x):
-        out2 = self.Spectral_Weight_21(x) + self.Spatial_Weight_21(x)
+        out2 = self.Spectral_Weight_21(x) + self.Spatial_Weight_21(x)  #光谱-空间融合特征
         out2 = self.activate2(self.bn2(self.AdaIN2(out2)))
+        #随机-批归一化-激活
+
         out2 = self.Spectral_Weight_22(out2) + self.Spatial_Weight_22(out2)
         out2 = self.activate2(self.bn2(self.AdaIN2(out2)))
         out2 = self.Spectral_Weight_23(out2) + self.Spatial_Weight_23(out2)
         out2 = self.activate2(self.bn2(self.AdaIN2(out2)))
+        #循环3次
+
         out2 = self.generate2(out2)
+        #解码器处理
         weight_alpha2 = F.softmax(self.Weight_Alpha2, dim=0)
         out2 = weight_alpha2[0] * x + weight_alpha2[1] * out2
+        #原始补丁与解码器输出自适应融合
 
         return out2
 
@@ -239,17 +248,18 @@ class SSDGnet(nn.Module):
     def __initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-                m.weight.data.normal_(0.0, 1.0)
+                m.weight.data.normal_(0.0, 1.0)     #初始化权重   均值为0标准差为1的正态分布
 
     def normalize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
                 weight = m.weight.data*1.0
-                m.weight.data = (m.weight.data - weight.mean())/weight.std()
+                m.weight.data = (m.weight.data - weight.mean())/weight.std()  #归一化权重
 
     def forward(self, x):
 
-        out1 = self.Net1(x)
+        out1 = self.Net1(x)  
         out2 = self.Net2(x)
+        #两个结构完全相同但权重不共享的两个ssdgn网络生成两个生成域GD
 
         return out1, out2

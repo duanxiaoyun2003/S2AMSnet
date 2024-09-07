@@ -120,10 +120,22 @@ def experiment():
                         'device': args.gpu, 'center_pixel': None, 'supervision': 'full'})
 
     r = int(hyperparams['patch_size']/2)+1
-    img_src=np.pad(img_src,((r,r),(r,r),(0,0)),'symmetric')
+    img_src=np.pad(img_src,((r,r),(r,r),(0,0)),'symmetric')  
+    #对原始图像 img_src 进行对称填充，填充量为 r。
+    #前两个参数 ((r,r),(r,r)) 表示在图像的高和宽两维度上都填充 r 个像素；
+    #第三个参数 (0,0) 表示在颜色通道上不做填充。
+    #填充方式是“对称的”（'symmetric'），即通过图像边缘像素的对称方式进行填充。
     img_tar=np.pad(img_tar,((r,r),(r,r),(0,0)),'symmetric')
     gt_src=np.pad(gt_src,((r,r),(r,r)),'constant',constant_values=(0,0))
+    #对源图像的标注 gt_src 进行常数填充。
+    #这里的 ((r,r),(r,r)) 表示在高和宽两维度上各填充 r 个像素，
+    #填充值是 0（即 constant_values=(0,0)），
+    #填充方式是“常数填充”（'constant'），意味着在边缘区域填充固定的常数值 0。
     gt_tar=np.pad(gt_tar,((r,r),(r,r)),'constant',constant_values=(0,0))     
+    #这段代码的主要目的是确保图像和标注在进行卷积等操作时，边界不会受到影响，尤其是保持卷积核能够适当地处理边缘数据。
+
+
+    
 
     train_gt_src, _, _, _ = sample_gt(gt_src, args.training_sample_ratio, mode='random')
     test_gt_tar, _, _, _ = sample_gt(gt_tar, 1, mode='random')
@@ -176,67 +188,89 @@ def experiment():
 
             G_opt.zero_grad()
 
-            aug_img1, aug_img2 = G_net(x)
-            alpha1 = np.random.beta(0.6, 0.6)
+            #多域混合模块
+            aug_img1, aug_img2 = G_net(x)  #得到两个生成域GD
+            alpha1 = np.random.beta(0.6, 0.6)  #生成权重因子
             alpha2 = np.random.beta(0.6, 0.6)
-            mix_img1 = alpha1 * aug_img1 + (1 - alpha1) * x
+            mix_img1 = alpha1 * aug_img1 + (1 - alpha1) * x  #生成域与原始数据批融合得到混合域MD
             mix_img2 = alpha2 * aug_img2 + (1 - alpha2) * x
 
            
             loss_MI = MI_loss(x, aug_img2, MINet, args) + MI_loss(x, aug_img1, MINet, args)
 
-            if flag_MI:
+            if flag_MI:#检查 flag_MI 的值。如果为 True，表示需要初始化优化器并计算 MI 损失。
                 opt_MI = torch.optim.Adam(MINet.parameters(), lr=args.lr)
+                #如果 flag_MI 为 True，使用 Adam 优化器初始化 opt_MI，目标是对 MINet 网络的参数进行优化，学习率为 args.lr。
                 opt_MI.zero_grad()
+                #调用 opt_MI.zero_grad() 将之前的梯度清零，以确保后续梯度更新是基于当前的前向传播和损失计算，而不是累积的旧梯度。
                 flag_MI = False
+                #将 flag_MI 设置为 False，确保这个代码块只会执行一次。避免重复初始化优化器和清空梯度。
                 loss_MI = MI_loss(x, aug_img2, MINet, args) + MI_loss(x, aug_img1, MINet, args)
 
-            predict1 = D_net(aug_img1.detach())
+            predict1 = D_net(aug_img1.detach())  #返回一个新的tensor，从当前计算图中分离下来,.detach防止梯度从 D_net 的反向传播过程回传到 aug_img1
             predict2 = D_net(aug_img2.detach())
             predict3 = D_net(mix_img1.detach())
             predict4 = D_net(mix_img2.detach())
             
-            loss_aug1 = cls_criterion(predict1, y.long())
+            loss_aug1 = cls_criterion(predict1, y.long()) #计算交叉熵损失
             loss_aug2 = cls_criterion(predict2, y.long())
             loss_aug3 = cls_criterion(predict3, y.long())
             loss_aug4 = cls_criterion(predict4, y.long())
 
-            prob1 = torch.softmax(predict1, dim=1)
+            prob1 = torch.softmax(predict1, dim=1) #得到的类别概率分布。
             prob2 = torch.softmax(predict2, dim=1)
             prob3 = torch.softmax(predict3, dim=1)
             prob4 = torch.softmax(predict4, dim=1)
 
             loss_kl = torch.nn.KLDivLoss()(prob1, prob4) + torch.nn.KLDivLoss()(prob2, prob3)
+            #计算kl散度损失
 
             loss_min = loss_kl + loss_aug1 + loss_aug2+ loss_aug3 + loss_aug4
-            loss_min.backward()
-            D_opt.step()
+            #总体最小化优化目标函数 交叉熵和kl散度
+            #优化语义一致性判别器
+            #判别器的目标是尽量能设别出同类样本
+            #使交叉熵损失降低，kl散度损失降低
+            #源域与生成域，不同生成域与混合域之间尽可能的相似
+            loss_min.backward()  #反向传播
+            D_opt.step()#更新判别网络参数
 
-            set_requires_grad(D_net, False)
+
+
+            set_requires_grad(D_net, False)  
+            #在更新生成网络的过程中，暂时冻结判别网络的参数，使其不再计算梯度。
             predict1 = D_net(aug_img1)
             predict2 = D_net(aug_img2)
             predict3 = D_net(mix_img1)
             predict4 = D_net(mix_img2)
 
-            prob1 = torch.softmax(predict1, dim=1)
+            prob1 = torch.softmax(predict1, dim=1)  #将判别网络的输出 logits 转换为类别概率
             prob2 = torch.softmax(predict2, dim=1)
             prob3 = torch.softmax(predict3, dim=1)
             prob4 = torch.softmax(predict4, dim=1)
 
             loss_kl = torch.nn.KLDivLoss()(prob1, prob4) + torch.nn.KLDivLoss()(prob2, prob3)
 
+            #两物体越相关，kl散度越小，互信息越大,互信息损失越小
+            #生成器的优化目标是尽量生成相关性较低的样本
+            #源域与生成域，不同生成域与混合域之间
+
+
             loss_max = -loss_kl + loss_MI 
+            #总体最大化优化目标函数 互信息和kl散度
+            #优化生成器
             loss_max.backward()
             set_requires_grad(D_net, True)
+
+
             D_opt.step()
             G_opt.step()
             opt_MI.step()
            
-            loss_list.append([loss_max.item(), loss_min.item()])
-        loss_max, loss_min = np.mean(loss_list, 0)
+            loss_list.append([loss_max.item(), loss_min.item()])  #
+        loss_max, loss_min = np.mean(loss_list, 0)  #计算各项损失均值
         
         t2 = time.time()
-        D_net.eval()
+        D_net.eval()  #鉴别器置于验证状态
         taracc, results = evaluate(D_net, test_loader, args.gpu)
         if best_acc < taracc:
             best_acc = taracc
